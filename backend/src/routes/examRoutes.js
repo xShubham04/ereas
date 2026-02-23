@@ -40,5 +40,17 @@ router.post(
   role(["student"]),
   examController.startExam
 );
+
+/**
+ * @route   POST /exams/answer
+ * @desc    Autosave answer
+ * @access  Student
+ */
+router.post(
+  "/answer",
+  auth,
+  role(["student"]),
+  examController.saveAnswer
+);
 module.exports = router;
 

@@ -163,9 +163,9 @@ exports.startExam = async (req, res) => {
     const sessionRes = await pool.query(
       `
       INSERT INTO exam_sessions
-      (exam_id, student_id, started_at, expires_at)
-      VALUES
-      ($1, $2, NOW(), NOW() + INTERVAL '${duration} minutes')
+      (exam_id, student_id, started_at, expires_at, status)
+       VALUES
+     ($1, $2, NOW(), NOW() + INTERVAL '${duration} minutes', 'active')
       RETURNING id, expires_at
       `,
       [examId, studentId]
@@ -204,5 +204,50 @@ exports.startExam = async (req, res) => {
     res.status(500).json({
       error: "Failed to start exam"
     });
+  }
+};
+/* ============================================================
+   AUTOSAVE ANSWER
+============================================================ */
+exports.saveAnswer = async (req, res) => {
+  try {
+    const { sessionId, questionId, selected_option } = req.body;
+    const studentId = req.user.id;
+
+    if (!sessionId || !questionId) {
+      return res.status(400).json({ error: "Missing fields" });
+    }
+
+    // Validate session belongs to student & active
+    const sessionRes = await pool.query(
+      `
+      SELECT * FROM exam_sessions
+      WHERE id = $1 AND student_id = $2 AND status = 'active'
+      `,
+      [sessionId, studentId]
+    );
+
+    if (sessionRes.rows.length === 0) {
+      return res.status(403).json({ error: "Invalid session" });
+    }
+
+    // Upsert answer
+    await pool.query(
+      `
+      INSERT INTO answers (session_id, question_id, selected_option)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (session_id, question_id)
+      DO UPDATE SET
+        selected_option = EXCLUDED.selected_option,
+        saved_at = CURRENT_TIMESTAMP
+      `,
+      [sessionId, questionId, selected_option]
+    );
+
+    res.json({ message: "Answer saved" });
+
+  } catch (err) {
+    console.error("Save answer error:", err);
+    res.status(500).json({ error: "Failed to save answer" });
   }
 };
