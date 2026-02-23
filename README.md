@@ -1,25 +1,12 @@
-# EREAS – Enterprise Randomized Examination & Analytics System
+# EREAS
 
-A LAN-based, secure examination platform with real-time analytics, built using
-Node.js, PostgreSQL, Redis, Kafka, and Docker.
+Enterprise Randomized Examination & Analytics System.
 
-## Tech Stack
-- Node.js + Express
-- PostgreSQL (Dockerized)
-- Redis
-- Kafka
-- Docker & Docker Compose
+A LAN-based secure examination platform designed for high concurrency,
+randomized assessments, and long-term analytics.
 
-## Features
-- Secure student authentication (JWT)
-- Randomized exam engine
-- Autosave with crash recovery
-- Real-time event streaming
-- Scalable architecture
+## Current Status
+Phase 1 completed (infrastructure & database)
 
-## Setup (Backend)
-```bash
-cd backend
-npm install
-cp .env.example .env
-node src/server.js
+## Next Phase
+Authentication system (JWT-based)
