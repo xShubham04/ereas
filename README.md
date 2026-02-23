@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # EREAS – Enterprise Randomized Examination & Analytics System
 
 A LAN-based, secure examination platform with real-time analytics, built using
@@ -23,3 +24,7 @@ cd backend
 npm install
 cp .env.example .env
 node src/server.js
+=======
+# ereas
+Enterprise Randomized Examination &amp; Analytics System.
+>>>>>>> fff9dd15ae6a318416c0ec7b0e1cecce3ca174c5
