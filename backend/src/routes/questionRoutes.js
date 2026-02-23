@@ -6,6 +6,7 @@ const router = express.Router();
 ================================ */
 const auth = require("../middleware/authMiddleware");
 const role = require("../middleware/roleMiddleware");
+const upload = require("../middleware/uploadMiddleware");
 
 /* ===============================
    CONTROLLER
@@ -38,6 +39,19 @@ router.get(
   auth,
   role(["admin"]),
   questionController.listQuestions
+);
+
+/**
+ * @route   POST /questions/bulk
+ * @desc    Bulk upload questions (CSV / XLSX)
+ * @access  Private (Admin)
+ */
+router.post(
+  "/bulk",
+  auth,
+  role(["admin"]),
+  upload.single("file"),
+  questionController.bulkUpload
 );
 /* ===============================
    EXPORT ROUTER

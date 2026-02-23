@@ -167,3 +167,133 @@ exports.listQuestions = async (req, res) => {
     });
   }
 };
+
+const { parse } = require("csv-parse/sync");
+const XLSX = require("xlsx");
+
+/* ============================================================
+   BULK QUESTION UPLOAD (ADMIN)
+============================================================ */
+exports.bulkUpload = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "File is required" });
+    }
+
+    let records = [];
+
+    /* --------------------
+       PARSE FILE
+    -------------------- */
+    if (req.file.mimetype === "text/csv") {
+      records = parse(req.file.buffer.toString(), {
+        columns: true,
+        skip_empty_lines: true
+      });
+    } else {
+      const workbook = XLSX.read(req.file.buffer);
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      records = XLSX.utils.sheet_to_json(sheet);
+    }
+
+    let inserted = 0;
+    let duplicates = 0;
+    let errors = 0;
+
+    /* --------------------
+       PROCESS ROWS
+    -------------------- */
+    for (const row of records) {
+      try {
+        const {
+          question_text,
+          option_a,
+          option_b,
+          option_c,
+          option_d,
+          option_e,
+          correct_option,
+          subject,
+          difficulty
+        } = row;
+
+        if (
+          !question_text ||
+          !option_a ||
+          !option_b ||
+          !correct_option ||
+          !subject ||
+          !difficulty
+        ) {
+          errors++;
+          continue;
+        }
+
+        // Duplicate check
+        const dup = await pool.query(
+          `
+          SELECT 1 FROM questions
+          WHERE similarity(question_text, $1) >= 0.85
+          LIMIT 1
+          `,
+          [question_text]
+        );
+
+        if (dup.rows.length > 0) {
+          duplicates++;
+          continue;
+        }
+
+        await pool.query(
+          `
+          INSERT INTO questions
+          (
+            question_text,
+            option_a,
+            option_b,
+            option_c,
+            option_d,
+            option_e,
+            correct_option,
+            subject,
+            difficulty,
+            created_by
+          )
+          VALUES
+          ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+          `,
+          [
+            question_text,
+            option_a,
+            option_b,
+            option_c || null,
+            option_d || null,
+            option_e || null,
+            correct_option,
+            subject,
+            difficulty,
+            req.user.id
+          ]
+        );
+
+        inserted++;
+
+      } catch {
+        errors++;
+      }
+    }
+
+    res.json({
+      total_rows: records.length,
+      inserted,
+      duplicates,
+      errors
+    });
+
+  } catch (err) {
+    console.error("Bulk upload error:", err);
+    res.status(500).json({
+      error: "Bulk upload failed"
+    });
+  }
+};
