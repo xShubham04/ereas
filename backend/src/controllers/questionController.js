@@ -108,3 +108,62 @@ exports.createQuestion = async (req, res) => {
     });
   }
 };
+
+/* ============================================================
+   LIST QUESTIONS (ADMIN)
+   - Supports filtering & pagination
+============================================================ */
+exports.listQuestions = async (req, res) => {
+  try {
+    const { subject, difficulty, page = 1, limit = 10 } = req.query;
+
+    const offset = (page - 1) * limit;
+    const conditions = [];
+    const values = [];
+
+    if (subject) {
+      values.push(subject);
+      conditions.push(`subject = $${values.length}`);
+    }
+
+    if (difficulty) {
+      values.push(difficulty);
+      conditions.push(`difficulty = $${values.length}`);
+    }
+
+    const whereClause =
+      conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+    const query = `
+      SELECT
+        id,
+        question_text,
+        subject,
+        difficulty,
+        created_at
+      FROM questions
+      ${whereClause}
+      ORDER BY created_at DESC
+      LIMIT $${values.length + 1}
+      OFFSET $${values.length + 2}
+    `;
+
+    values.push(limit);
+    values.push(offset);
+
+    const result = await pool.query(query, values);
+
+    res.json({
+      page: Number(page),
+      limit: Number(limit),
+      count: result.rows.length,
+      questions: result.rows
+    });
+
+  } catch (err) {
+    console.error("List questions error:", err);
+    res.status(500).json({
+      error: "Failed to fetch questions"
+    });
+  }
+};

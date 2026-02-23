@@ -28,6 +28,17 @@ router.post(
   questionController.createQuestion
 );
 
+/**
+ * @route   GET /questions
+ * @desc    List questions with filters (ADMIN only)
+ * @access  Private (Admin)
+ */
+router.get(
+  "/",
+  auth,
+  role(["admin"]),
+  questionController.listQuestions
+);
 /* ===============================
    EXPORT ROUTER
 ================================ */
