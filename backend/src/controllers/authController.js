@@ -14,11 +14,11 @@ exports.register = async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
 
     await pool.query(
-      `INSERT INTO students
-       (permanent_index, name, email, password_hash)
-       VALUES ($1,$2,$3,$4)`,
-      [permanent_index, name, email, hashedPassword]
-    );
+  `INSERT INTO students
+   (permanent_index, name, email, password_hash, role)
+   VALUES ($1,$2,$3,$4,$5)`,
+  [permanent_index, name, email, hashedPassword, "student"]
+);
 
     res.status(201).json({ message: "Student registered" });
   } catch (err) {
@@ -57,11 +57,10 @@ exports.login = async (req, res) => {
       return res.status(401).json({ error: "Invalid credentials" });
 
     const token = jwt.sign(
-      { id: student.id },
-      process.env.JWT_SECRET,
-      { expiresIn: "7d" }
-    );
-
+  { id: student.id, role: student.role },
+  process.env.JWT_SECRET,
+  { expiresIn: "7d" }
+);
     res.json({ token });
   } catch (err) {
     console.error(err);

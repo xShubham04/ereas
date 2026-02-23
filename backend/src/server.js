@@ -1,6 +1,9 @@
-const authRoutes = require("./routes/authRoutes");
-// LOAD ENV FIRST (must be first line)
 require("dotenv").config();
+// LOAD ENV FIRST (must be first line)
+const authRoutes = require("./routes/authRoutes");
+const auth = require("./middleware/authMiddleware");
+const role = require("./middleware/roleMiddleware");
+
 
 const express = require("express");
 const cors = require("cors");
@@ -60,6 +63,22 @@ app.get("/", async (req, res) => {
   }
 
 });
+
+app.get("/admin/test",
+  auth,
+  role(["admin"]),
+  (req, res) => {
+    res.json({ message: "Admin access granted" });
+  }
+);
+
+app.get("/student/test",
+  auth,
+  role(["student"]),
+  (req, res) => {
+    res.json({ message: "Student access granted" });
+  }
+);
 
 /* ===============================
    SERVER START
