@@ -1,28 +1,45 @@
-require("dotenv").config();
 // LOAD ENV FIRST (must be first line)
-const authRoutes = require("./routes/authRoutes");
-const auth = require("./middleware/authMiddleware");
-const role = require("./middleware/roleMiddleware");
-
+require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
 
-// IMPORT SERVICES
+/* ===============================
+   IMPORT ROUTES
+================================ */
+const authRoutes = require("./routes/authRoutes");
+const questionRoutes = require("./routes/questionRoutes");
+
+/* ===============================
+   IMPORT MIDDLEWARE
+================================ */
+const auth = require("./middleware/authMiddleware");
+const role = require("./middleware/roleMiddleware");
+
+/* ===============================
+   IMPORT SERVICES
+================================ */
 const pool = require("./config/db");
 const redis = require("./config/redis");
 const kafkaProducer = require("./config/kafka");
 
 const app = express();
 
+/* ===============================
+   GLOBAL MIDDLEWARE
+================================ */
 app.use(cors());
 app.use(express.json());
 
+/* ===============================
+   ROUTES
+================================ */
 app.use("/auth", authRoutes);
+app.use("/questions", questionRoutes);
 
 /* ===============================
-   CONNECT KAFKA ON SERVER START
-================================*/
+   CONNECT KAFKA ON STARTUP
+================================ */
 (async () => {
   try {
     await kafkaProducer.connect();
@@ -33,37 +50,29 @@ app.use("/auth", authRoutes);
 })();
 
 /* ===============================
-   HEALTH CHECK ROUTE
-================================*/
+   HEALTH CHECK
+================================ */
 app.get("/", async (req, res) => {
-
   try {
-
-    // TEST POSTGRES
     const dbTime = await pool.query("SELECT NOW()");
-
-    // TEST REDIS
     await redis.set("health", "OK");
-    const redisVal = await redis.get("health");
 
     res.json({
       status: "EREAS BACKEND RUNNING",
       postgres_time: dbTime.rows[0].now,
-      redis: redisVal
+      redis: await redis.get("health")
     });
-
   } catch (err) {
-
-    console.error("Health route error:", err);
-
+    console.error("Health check error:", err);
     res.status(500).json({
       error: "Server health check failed"
     });
-
   }
-
 });
 
+/* ===============================
+   ROLE TEST ROUTES (TEMP)
+================================ */
 app.get("/admin/test",
   auth,
   role(["admin"]),
@@ -82,7 +91,7 @@ app.get("/student/test",
 
 /* ===============================
    SERVER START
-================================*/
+================================ */
 const PORT = process.env.PORT || 5055;
 
 app.listen(PORT, () => {
