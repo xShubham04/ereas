@@ -1,3 +1,4 @@
+const authRoutes = require("./routes/authRoutes");
 // LOAD ENV FIRST (must be first line)
 require("dotenv").config();
 
@@ -13,6 +14,8 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
+
+app.use("/auth", authRoutes);
 
 /* ===============================
    CONNECT KAFKA ON SERVER START
