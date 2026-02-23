@@ -251,3 +251,92 @@ exports.saveAnswer = async (req, res) => {
     res.status(500).json({ error: "Failed to save answer" });
   }
 };
+/* ============================================================
+   SUBMIT EXAM (STUDENT)
+============================================================ */
+exports.submitExam = async (req, res) => {
+  try {
+    const { sessionId } = req.body;
+    const studentId = req.user.id;
+
+    if (!sessionId) {
+      return res.status(400).json({ error: "Session ID required" });
+    }
+
+    // Validate active session
+    const sessionRes = await pool.query(
+      `
+      SELECT * FROM exam_sessions
+      WHERE id = $1 AND student_id = $2 AND status = 'active'
+      `,
+      [sessionId, studentId]
+    );
+
+    if (sessionRes.rows.length === 0) {
+      return res.status(403).json({ error: "Invalid or closed session" });
+    }
+
+    // Evaluate answers
+    const evalRes = await pool.query(
+      `
+      SELECT
+        a.question_id,
+        a.selected_option,
+        q.correct_option
+      FROM answers a
+      JOIN questions q ON q.id = a.question_id
+      WHERE a.session_id = $1
+      `,
+      [sessionId]
+    );
+
+    let score = 0;
+
+    for (const row of evalRes.rows) {
+      const isCorrect = row.selected_option === row.correct_option;
+      if (isCorrect) score++;
+
+      await pool.query(
+        `
+        UPDATE answers
+        SET is_correct = $1
+        WHERE session_id = $2 AND question_id = $3
+        `,
+        [isCorrect, sessionId, row.question_id]
+      );
+    }
+
+    // Total questions
+    const totalRes = await pool.query(
+      `
+      SELECT COUNT(*) FROM exam_questions eq
+      JOIN exam_sessions es ON es.exam_id = eq.exam_id
+      WHERE es.id = $1
+      `,
+      [sessionId]
+    );
+
+    const totalQuestions = Number(totalRes.rows[0].count);
+
+    // Close session
+    await pool.query(
+      `
+      UPDATE exam_sessions
+      SET status = 'completed', completed_at = NOW()
+      WHERE id = $1
+      `,
+      [sessionId]
+    );
+
+    res.json({
+      message: "Exam submitted successfully",
+      score,
+      total_questions: totalQuestions,
+      percentage: ((score / totalQuestions) * 100).toFixed(2)
+    });
+
+  } catch (err) {
+    console.error("Submit exam error:", err);
+    res.status(500).json({ error: "Failed to submit exam" });
+  }
+};

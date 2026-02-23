@@ -52,5 +52,16 @@ router.post(
   role(["student"]),
   examController.saveAnswer
 );
+/**
+ * @route   POST /exams/submit
+ * @desc    Submit exam & evaluate
+ * @access  Student
+ */
+router.post(
+  "/submit",
+  auth,
+  role(["student"]),
+  examController.submitExam
+);
 module.exports = router;
 
