@@ -9,6 +9,7 @@ const cors = require("cors");
 ================================ */
 const authRoutes = require("./routes/authRoutes");
 const questionRoutes = require("./routes/questionRoutes");
+const examRoutes = require("./routes/examRoutes");
 
 /* ===============================
    IMPORT MIDDLEWARE
@@ -36,6 +37,7 @@ app.use(express.json());
 ================================ */
 app.use("/auth", authRoutes);
 app.use("/questions", questionRoutes);
+app.use("/exams", examRoutes);
 
 /* ===============================
    CONNECT KAFKA ON STARTUP
