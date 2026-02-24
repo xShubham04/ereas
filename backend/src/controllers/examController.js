@@ -20,10 +20,7 @@ exports.createExam = async (req, res) => {
       [title, duration_minutes, req.user.id]
     );
 
-    res.status(201).json({
-      exam_id: result.rows[0].id
-    });
-
+    res.status(201).json({ exam_id: result.rows[0].id });
   } catch (err) {
     console.error("Create exam error:", err);
     res.status(500).json({ error: "Failed to create exam" });
@@ -31,7 +28,7 @@ exports.createExam = async (req, res) => {
 };
 
 /* ============================================================
-   ASSIGN RANDOM QUESTIONS TO EXAM (ADMIN)
+   ASSIGN QUESTIONS (ADMIN)
 ============================================================ */
 exports.assignQuestions = async (req, res) => {
   try {
@@ -42,16 +39,13 @@ exports.assignQuestions = async (req, res) => {
       return res.status(400).json({ error: "Invalid blueprint" });
     }
 
-    // Prevent reassignment
     const exists = await pool.query(
       "SELECT 1 FROM exam_questions WHERE exam_id = $1 LIMIT 1",
       [examId]
     );
 
     if (exists.rows.length > 0) {
-      return res.status(409).json({
-        error: "Questions already assigned to this exam"
-      });
+      return res.status(409).json({ error: "Questions already assigned" });
     }
 
     let order = 1;
@@ -59,17 +53,7 @@ exports.assignQuestions = async (req, res) => {
     for (const block of blueprint) {
       const { subject, difficulty, count } = block;
 
-      if (!subject || !count) {
-        return res.status(400).json({
-          error: "Blueprint block must include subject and count"
-        });
-      }
-
-      let sql = `
-        SELECT id
-        FROM questions
-        WHERE subject = $1
-      `;
+      let sql = `SELECT id FROM questions WHERE subject = $1`;
       const params = [subject];
 
       if (difficulty !== undefined) {
@@ -80,37 +64,29 @@ exports.assignQuestions = async (req, res) => {
       sql += ` ORDER BY RANDOM() LIMIT $${params.length + 1}`;
       params.push(count);
 
-      const questions = await pool.query(sql, params);
+      const qs = await pool.query(sql, params);
 
-      if (questions.rows.length < count) {
+      if (qs.rows.length < count) {
         return res.status(400).json({
-          error: `Not enough questions for subject: ${subject}`
+          error: `Not enough questions for ${subject}`
         });
       }
 
-      for (const q of questions.rows) {
+      for (const q of qs.rows) {
         await pool.query(
           `
-          INSERT INTO exam_questions
-          (exam_id, question_id, question_order)
+          INSERT INTO exam_questions (exam_id, question_id, question_order)
           VALUES ($1, $2, $3)
           `,
-          [examId, q.id, order]
+          [examId, q.id, order++]
         );
-        order++;
       }
     }
 
-    res.status(201).json({
-      message: "Questions assigned successfully",
-      total_questions: order - 1
-    });
-
+    res.status(201).json({ message: "Questions assigned successfully" });
   } catch (err) {
     console.error("Assign questions error:", err);
-    res.status(500).json({
-      error: "Failed to assign questions"
-    });
+    res.status(500).json({ error: "Failed to assign questions" });
   }
 };
 
@@ -122,69 +98,65 @@ exports.startExam = async (req, res) => {
     const { examId } = req.params;
     const studentId = req.user.id;
 
-    // Ensure exam exists
-    const examRes = await pool.query(
+    const exam = await pool.query(
       "SELECT duration_minutes FROM exams WHERE id = $1",
       [examId]
     );
 
-    if (examRes.rows.length === 0) {
+    if (!exam.rows.length) {
       return res.status(404).json({ error: "Exam not found" });
     }
 
-    // Ensure questions are assigned
-    const qCheck = await pool.query(
-      "SELECT 1 FROM exam_questions WHERE exam_id = $1 LIMIT 1",
-      [examId]
-    );
-
-    if (qCheck.rows.length === 0) {
-      return res.status(400).json({
-        error: "Exam questions not assigned yet"
-      });
-    }
-
-    // Check if session already exists
-    const existingSession = await pool.query(
-      "SELECT * FROM exam_sessions WHERE exam_id = $1 AND student_id = $2",
-      [examId, studentId]
-    );
-
-    if (existingSession.rows.length > 0) {
-      return res.status(200).json({
-        session_id: existingSession.rows[0].id,
-        message: "Exam already started"
-      });
-    }
-
-    // Create session
-    const duration = examRes.rows[0].duration_minutes;
-
-    const sessionRes = await pool.query(
+    // Auto-finalize expired attempts
+    await pool.query(
       `
-      INSERT INTO exam_sessions
-      (exam_id, student_id, started_at, expires_at, status)
-       VALUES
-     ($1, $2, NOW(), NOW() + INTERVAL '${duration} minutes', 'active')
-      RETURNING id, expires_at
+      UPDATE exam_sessions
+      SET status = 'completed', completed_at = NOW()
+      WHERE student_id = $1
+        AND status = 'active'
+        AND expires_at <= NOW()
+      `,
+      [studentId]
+    );
+
+    const active = await pool.query(
+      `
+      SELECT *
+      FROM exam_sessions
+      WHERE exam_id = $1 AND student_id = $2 AND status = 'active'
+      LIMIT 1
       `,
       [examId, studentId]
     );
 
-    const sessionId = sessionRes.rows[0].id;
+    if (active.rows.length) {
+      return res.json({
+        session_id: active.rows[0].id,
+        expires_at: active.rows[0].expires_at
+      });
+    }
 
-    // Fetch questions (NO answers)
-    const questionsRes = await pool.query(
+    const session = await pool.query(
       `
-      SELECT
-        q.id,
-        q.question_text,
-        q.option_a,
-        q.option_b,
-        q.option_c,
-        q.option_d,
-        q.option_e,
-        eq.question_order
+      INSERT INTO exam_sessions
+      (exam_id, student_id, started_at, expires_at, status)
+      VALUES (
+        $1,
+        $2,
+        NOW(),
+        NOW() + ($3 || ' minutes')::interval,
+        'active'
+      )
+      RETURNING id, expires_at
+      `,
+      [examId, studentId, exam.rows[0].duration_minutes]
+    );
+
+    const questions = await pool.query(
+      `
+      SELECT q.id, q.question_text,
+             q.option_a, q.option_b, q.option_c, q.option_d, q.option_e,
+             eq.question_order
       FROM exam_questions eq
       JOIN questions q ON q.id = eq.question_id
       WHERE eq.exam_id = $1
@@ -194,44 +166,38 @@ exports.startExam = async (req, res) => {
     );
 
     res.status(201).json({
-      session_id: sessionId,
-      expires_at: sessionRes.rows[0].expires_at,
-      questions: questionsRes.rows
+      session_id: session.rows[0].id,
+      expires_at: session.rows[0].expires_at,
+      questions: questions.rows
     });
-
   } catch (err) {
     console.error("Start exam error:", err);
-    res.status(500).json({
-      error: "Failed to start exam"
-    });
+    res.status(500).json({ error: "Failed to start exam" });
   }
 };
+
 /* ============================================================
-   AUTOSAVE ANSWER
+   SAVE ANSWER
 ============================================================ */
 exports.saveAnswer = async (req, res) => {
   try {
     const { sessionId, questionId, selected_option } = req.body;
-    const studentId = req.user.id;
 
-    if (!sessionId || !questionId) {
-      return res.status(400).json({ error: "Missing fields" });
-    }
-
-    // Validate session belongs to student & active
-    const sessionRes = await pool.query(
+    const valid = await pool.query(
       `
-      SELECT * FROM exam_sessions
-      WHERE id = $1 AND student_id = $2 AND status = 'active'
+      SELECT 1
+      FROM exam_sessions
+      WHERE id = $1 AND student_id = $2
+        AND status = 'active'
+        AND expires_at > NOW()
       `,
-      [sessionId, studentId]
+      [sessionId, req.user.id]
     );
 
-    if (sessionRes.rows.length === 0) {
-      return res.status(403).json({ error: "Invalid session" });
+    if (!valid.rows.length) {
+      return res.status(403).json({ error: "Session expired or invalid" });
     }
 
-    // Upsert answer
     await pool.query(
       `
       INSERT INTO answers (session_id, question_id, selected_option)
@@ -239,104 +205,101 @@ exports.saveAnswer = async (req, res) => {
       ON CONFLICT (session_id, question_id)
       DO UPDATE SET
         selected_option = EXCLUDED.selected_option,
-        saved_at = CURRENT_TIMESTAMP
+        saved_at = NOW()
       `,
       [sessionId, questionId, selected_option]
     );
 
     res.json({ message: "Answer saved" });
-
   } catch (err) {
     console.error("Save answer error:", err);
     res.status(500).json({ error: "Failed to save answer" });
   }
 };
+
 /* ============================================================
-   SUBMIT EXAM (STUDENT)
+   SUBMIT EXAM
 ============================================================ */
 exports.submitExam = async (req, res) => {
   try {
     const { sessionId } = req.body;
-    const studentId = req.user.id;
 
-    if (!sessionId) {
-      return res.status(400).json({ error: "Session ID required" });
-    }
-
-    // Validate active session
-    const sessionRes = await pool.query(
-      `
-      SELECT * FROM exam_sessions
-      WHERE id = $1 AND student_id = $2 AND status = 'active'
-      `,
-      [sessionId, studentId]
-    );
-
-    if (sessionRes.rows.length === 0) {
-      return res.status(403).json({ error: "Invalid or closed session" });
-    }
-
-    // Evaluate answers
-    const evalRes = await pool.query(
-      `
-      SELECT
-        a.question_id,
-        a.selected_option,
-        q.correct_option
-      FROM answers a
-      JOIN questions q ON q.id = a.question_id
-      WHERE a.session_id = $1
-      `,
-      [sessionId]
-    );
-
-    let score = 0;
-
-    for (const row of evalRes.rows) {
-      const isCorrect = row.selected_option === row.correct_option;
-      if (isCorrect) score++;
-
-      await pool.query(
-        `
-        UPDATE answers
-        SET is_correct = $1
-        WHERE session_id = $2 AND question_id = $3
-        `,
-        [isCorrect, sessionId, row.question_id]
-      );
-    }
-
-    // Total questions
-    const totalRes = await pool.query(
-      `
-      SELECT COUNT(*) FROM exam_questions eq
-      JOIN exam_sessions es ON es.exam_id = eq.exam_id
-      WHERE es.id = $1
-      `,
-      [sessionId]
-    );
-
-    const totalQuestions = Number(totalRes.rows[0].count);
-
-    // Close session
     await pool.query(
       `
       UPDATE exam_sessions
       SET status = 'completed', completed_at = NOW()
-      WHERE id = $1
+      WHERE id = $1 AND student_id = $2
       `,
-      [sessionId]
+      [sessionId, req.user.id]
     );
 
-    res.json({
-      message: "Exam submitted successfully",
-      score,
-      total_questions: totalQuestions,
-      percentage: ((score / totalQuestions) * 100).toFixed(2)
-    });
-
+    res.json({ message: "Exam submitted successfully" });
   } catch (err) {
     console.error("Submit exam error:", err);
     res.status(500).json({ error: "Failed to submit exam" });
+  }
+};
+
+/* ============================================================
+   REVIEW EXAM (BULLETPROOF)
+============================================================ */
+exports.reviewExam = async (req, res) => {
+  try {
+    const studentId = req.user.id;
+
+    // Finalize ALL expired exams
+    await pool.query(
+      `
+      UPDATE exam_sessions
+      SET status = 'completed', completed_at = NOW()
+      WHERE student_id = $1
+        AND status = 'active'
+        AND expires_at <= NOW()
+      `,
+      [studentId]
+    );
+
+    const session = await pool.query(
+      `
+      SELECT *
+      FROM exam_sessions
+      WHERE student_id = $1 AND status = 'completed'
+      ORDER BY completed_at DESC
+      LIMIT 1
+      `,
+      [studentId]
+    );
+
+    if (!session.rows.length) {
+      return res.status(403).json({ error: "Exam not completed yet" });
+    }
+
+    const result = await pool.query(
+      `
+      SELECT
+        q.question_text,
+        q.correct_option,
+        a.selected_option,
+        a.is_correct,
+        eq.question_order
+      FROM exam_questions eq
+      JOIN questions q ON q.id = eq.question_id
+      LEFT JOIN answers a
+        ON a.question_id = q.id
+       AND a.session_id = $1
+      WHERE eq.exam_id = $2
+      ORDER BY eq.question_order
+      `,
+      [session.rows[0].id, session.rows[0].exam_id]
+    );
+
+    res.json({
+      exam_id: session.rows[0].exam_id,
+      completed_at: session.rows[0].completed_at,
+      questions: result.rows
+    });
+  } catch (err) {
+    console.error("Review exam error:", err);
+    res.status(500).json({ error: "Failed to review exam" });
   }
 };

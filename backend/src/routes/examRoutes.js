@@ -5,63 +5,16 @@ const auth = require("../middleware/authMiddleware");
 const role = require("../middleware/roleMiddleware");
 const examController = require("../controllers/examController");
 
-/**
- * @route   POST /exams
- * @desc    Create exam
- * @access  Admin
- */
-router.post(
-  "/",
-  auth,
-  role(["admin"]),
-  examController.createExam
-);
+// ADMIN
+router.post("/", auth, role(["admin"]), examController.createExam);
+router.post("/:examId/questions", auth, role(["admin"]), examController.assignQuestions);
 
-/**
- * @route   POST /exams/:examId/questions
- * @desc    Assign randomized questions to exam
- * @access  Admin
- */
-router.post(
-  "/:examId/questions",
-  auth,
-  role(["admin"]),
-  examController.assignQuestions
-);
+// STUDENT
+router.post("/:examId/start", auth, role(["student"]), examController.startExam);
+router.post("/answer", auth, role(["student"]), examController.saveAnswer);
+router.post("/submit", auth, role(["student"]), examController.submitExam);
 
-/**
- * @route   POST /exams/:examId/start
- * @desc    Start exam (Student)
- * @access  Student
- */
-router.post(
-  "/:examId/start",
-  auth,
-  role(["student"]),
-  examController.startExam
-);
+// NOTE: review does NOT need examId anymore
+router.get("/review", auth, role(["student"]), examController.reviewExam);
 
-/**
- * @route   POST /exams/answer
- * @desc    Autosave answer
- * @access  Student
- */
-router.post(
-  "/answer",
-  auth,
-  role(["student"]),
-  examController.saveAnswer
-);
-/**
- * @route   POST /exams/submit
- * @desc    Submit exam & evaluate
- * @access  Student
- */
-router.post(
-  "/submit",
-  auth,
-  role(["student"]),
-  examController.submitExam
-);
 module.exports = router;
-
