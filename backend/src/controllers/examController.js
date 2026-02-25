@@ -83,7 +83,10 @@ exports.assignQuestions = async (req, res) => {
       }
     }
 
-    res.status(201).json({ message: "Questions assigned successfully" });
+    res.status(201).json({
+      message: "Questions assigned successfully",
+      total_questions: order - 1
+    });
   } catch (err) {
     console.error("Assign questions error:", err);
     res.status(500).json({ error: "Failed to assign questions" });
@@ -91,7 +94,7 @@ exports.assignQuestions = async (req, res) => {
 };
 
 /* ============================================================
-   START EXAM (STUDENT)
+   START EXAM
 ============================================================ */
 exports.startExam = async (req, res) => {
   try {
@@ -107,32 +110,22 @@ exports.startExam = async (req, res) => {
       return res.status(404).json({ error: "Exam not found" });
     }
 
-    // Auto-finalize expired attempts
-    await pool.query(
-      `
-      UPDATE exam_sessions
-      SET status = 'completed', completed_at = NOW()
-      WHERE student_id = $1
-        AND status = 'active'
-        AND expires_at <= NOW()
-      `,
-      [studentId]
-    );
-
-    const active = await pool.query(
+    const existing = await pool.query(
       `
       SELECT *
       FROM exam_sessions
-      WHERE exam_id = $1 AND student_id = $2 AND status = 'active'
+      WHERE exam_id = $1 AND student_id = $2
+      ORDER BY started_at DESC
       LIMIT 1
       `,
       [examId, studentId]
     );
 
-    if (active.rows.length) {
+    if (existing.rows.length && existing.rows[0].status === "active") {
       return res.json({
-        session_id: active.rows[0].id,
-        expires_at: active.rows[0].expires_at
+        session_id: existing.rows[0].id,
+        expires_at: existing.rows[0].expires_at,
+        message: "Exam already started"
       });
     }
 
@@ -140,13 +133,7 @@ exports.startExam = async (req, res) => {
       `
       INSERT INTO exam_sessions
       (exam_id, student_id, started_at, expires_at, status)
-      VALUES (
-        $1,
-        $2,
-        NOW(),
-        NOW() + ($3 || ' minutes')::interval,
-        'active'
-      )
+      VALUES ($1, $2, NOW(), NOW() + ($3 || ' minutes')::interval, 'active')
       RETURNING id, expires_at
       `,
       [examId, studentId, exam.rows[0].duration_minutes]
@@ -181,21 +168,40 @@ exports.startExam = async (req, res) => {
 ============================================================ */
 exports.saveAnswer = async (req, res) => {
   try {
-    const { sessionId, questionId, selected_option } = req.body;
+    let { sessionId, questionId, selected_option } = req.body;
 
-    const valid = await pool.query(
+    if (typeof sessionId === 'string') {
+      sessionId = sessionId.trim().replace(/\/+$/, "");
+    }
+
+    const session = await pool.query(
       `
-      SELECT 1
-      FROM exam_sessions
-      WHERE id = $1 AND student_id = $2
-        AND status = 'active'
-        AND expires_at > NOW()
+      SELECT * FROM exam_sessions
+      WHERE id = $1
       `,
-      [sessionId, req.user.id]
+      [sessionId]
     );
 
-    if (!valid.rows.length) {
-      return res.status(403).json({ error: "Session expired or invalid" });
+    if (!session.rows.length) {
+      console.warn("saveAnswer: session not found", sessionId);
+      return res.status(403).json({ error: "Invalid session id" });
+    }
+
+    if (session.rows[0].student_id !== req.user.id) {
+      console.warn(
+        "saveAnswer: session user mismatch",
+        sessionId,
+        "db student_id=", session.rows[0].student_id,
+        "token user=", req.user.id
+      );
+      return res.status(403).json({
+        error: "Session does not belong to authenticated user"
+      });
+    }
+
+    if (session.rows[0].status !== 'active') {
+      console.warn("saveAnswer: session not active", sessionId, session.rows[0].status);
+      return res.status(403).json({ error: "Session not active" });
     }
 
     await pool.query(
@@ -203,9 +209,7 @@ exports.saveAnswer = async (req, res) => {
       INSERT INTO answers (session_id, question_id, selected_option)
       VALUES ($1, $2, $3)
       ON CONFLICT (session_id, question_id)
-      DO UPDATE SET
-        selected_option = EXCLUDED.selected_option,
-        saved_at = NOW()
+      DO UPDATE SET selected_option = EXCLUDED.selected_option
       `,
       [sessionId, questionId, selected_option]
     );
@@ -218,22 +222,103 @@ exports.saveAnswer = async (req, res) => {
 };
 
 /* ============================================================
-   SUBMIT EXAM
+   SUBMIT EXAM (FINAL)
 ============================================================ */
 exports.submitExam = async (req, res) => {
   try {
-    const { sessionId } = req.body;
+    let { sessionId } = req.body;
+
+    // sanitise possible trailing slash or whitespace from client-side copy/paste
+    if (typeof sessionId === 'string') {
+      sessionId = sessionId.trim().replace(/\/+$/, "");
+    }
+
+    const sessionRes = await pool.query(
+      `
+      SELECT * FROM exam_sessions
+      WHERE id = $1
+      `,
+      [sessionId]
+    );
+
+    if (!sessionRes.rows.length) {
+      console.warn("submitExam: session not found", sessionId);
+      return res.status(403).json({ error: "Invalid session id" });
+    }
+
+    const sessionRow = sessionRes.rows[0];
+
+    if (sessionRow.student_id !== req.user.id) {
+      console.warn(
+        "submitExam: session user mismatch",
+        sessionId,
+        "db student_id=", sessionRow.student_id,
+        "token user=", req.user.id
+      );
+      return res.status(403).json({
+        error: "Session does not belong to authenticated user"
+      });
+    }
+
+    if (sessionRow.status !== 'active') {
+      console.warn("submitExam: session not active", sessionId, sessionRow.status);
+      return res.status(403).json({ error: "Session not active" });
+    }
+
+    const evalRes = await pool.query(
+      `
+      SELECT a.selected_option, q.correct_option
+      FROM answers a
+      JOIN questions q ON q.id = a.question_id
+      WHERE a.session_id = $1
+      `,
+      [sessionId]
+    );
+
+    let score = 0;
+    for (const row of evalRes.rows) {
+      if (row.selected_option === row.correct_option) score++;
+    }
+
+    const total = evalRes.rows.length;
+    const percentage = ((score / total) * 100).toFixed(2);
+
+    // note: results table uses total_questions column and requires exam_id, student_id
+    await pool.query(
+      `
+      INSERT INTO results (
+        session_id, exam_id, student_id,
+        score, total_questions, percentage,
+        started_at, completed_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+      `,
+      [
+        sessionId,
+        sessionRow.exam_id,
+        sessionRow.student_id,
+        score,
+        total,
+        percentage,
+        sessionRow.started_at
+      ]
+    );
 
     await pool.query(
       `
       UPDATE exam_sessions
       SET status = 'completed', completed_at = NOW()
-      WHERE id = $1 AND student_id = $2
+      WHERE id = $1
       `,
-      [sessionId, req.user.id]
+      [sessionId]
     );
 
-    res.json({ message: "Exam submitted successfully" });
+    res.json({
+      message: "Exam submitted",
+      score,
+      total,
+      percentage
+    });
   } catch (err) {
     console.error("Submit exam error:", err);
     res.status(500).json({ error: "Failed to submit exam" });
@@ -241,65 +326,177 @@ exports.submitExam = async (req, res) => {
 };
 
 /* ============================================================
-   REVIEW EXAM (BULLETPROOF)
+   REVIEW EXAM
 ============================================================ */
 exports.reviewExam = async (req, res) => {
   try {
-    const studentId = req.user.id;
+    // support both route param and query param for convenience
+    let examId = req.params.examId || req.query.examId;
 
-    // Finalize ALL expired exams
-    await pool.query(
-      `
-      UPDATE exam_sessions
-      SET status = 'completed', completed_at = NOW()
-      WHERE student_id = $1
-        AND status = 'active'
-        AND expires_at <= NOW()
-      `,
-      [studentId]
-    );
-
-    const session = await pool.query(
-      `
-      SELECT *
-      FROM exam_sessions
-      WHERE student_id = $1 AND status = 'completed'
-      ORDER BY completed_at DESC
-      LIMIT 1
-      `,
-      [studentId]
-    );
-
-    if (!session.rows.length) {
-      return res.status(403).json({ error: "Exam not completed yet" });
+    if (!examId) {
+      return res.status(400).json({ error: "Missing examId" });
     }
 
     const result = await pool.query(
       `
-      SELECT
-        q.question_text,
-        q.correct_option,
-        a.selected_option,
-        a.is_correct,
-        eq.question_order
+      SELECT r.*, s.completed_at
+      FROM results r
+      JOIN exam_sessions s ON s.id = r.session_id
+      WHERE s.exam_id = $1 AND s.student_id = $2
+      ORDER BY r.created_at DESC
+      LIMIT 1
+      `,
+      [examId, req.user.id]
+    );
+
+    if (!result.rows.length) {
+      return res.status(403).json({ error: "Exam not completed yet" });
+    }
+
+    const sessionId = result.rows[0].session_id;
+
+    const questions = await pool.query(
+      `
+      SELECT q.question_text, q.correct_option,
+             a.selected_option, a.is_correct, eq.question_order
       FROM exam_questions eq
       JOIN questions q ON q.id = eq.question_id
       LEFT JOIN answers a
-        ON a.question_id = q.id
-       AND a.session_id = $1
+        ON a.question_id = q.id AND a.session_id = $1
       WHERE eq.exam_id = $2
       ORDER BY eq.question_order
       `,
-      [session.rows[0].id, session.rows[0].exam_id]
+      [sessionId, examId]
     );
 
     res.json({
-      exam_id: session.rows[0].exam_id,
-      completed_at: session.rows[0].completed_at,
-      questions: result.rows
+      score: result.rows[0].score,
+      total: result.rows[0].total,
+      percentage: result.rows[0].percentage,
+      questions: questions.rows
     });
   } catch (err) {
     console.error("Review exam error:", err);
     res.status(500).json({ error: "Failed to review exam" });
+  }
+};
+/* ============================================================
+   STUDENT PERFORMANCE SUMMARY
+============================================================ */
+exports.studentAnalytics = async (req, res) => {
+  try {
+    const { examId } = req.params;
+
+    const result = await pool.query(
+      `
+      SELECT r.score, r.total, r.percentage, r.created_at
+      FROM results r
+      JOIN exam_sessions s ON s.id = r.session_id
+      WHERE s.exam_id = $1 AND s.student_id = $2
+      ORDER BY r.created_at DESC
+      LIMIT 1
+      `,
+      [examId, req.user.id]
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({ error: "No results found" });
+    }
+
+    res.json(result.rows[0]);
+
+  } catch (err) {
+    console.error("Student analytics error:", err);
+    res.status(500).json({ error: "Failed to fetch analytics" });
+  }
+};
+/* ============================================================
+   SUBJECT BREAKDOWN
+============================================================ */
+exports.subjectBreakdown = async (req, res) => {
+  try {
+    const { examId } = req.params;
+
+    const breakdown = await pool.query(
+      `
+      SELECT
+        q.subject,
+        COUNT(*) FILTER (WHERE a.is_correct = true) AS correct,
+        COUNT(*) AS total
+      FROM exam_questions eq
+      JOIN questions q ON q.id = eq.question_id
+      JOIN exam_sessions s ON s.exam_id = eq.exam_id
+      LEFT JOIN answers a
+        ON a.question_id = q.id
+       AND a.session_id = s.id
+      WHERE s.exam_id = $1
+        AND s.student_id = $2
+      GROUP BY q.subject
+      `,
+      [examId, req.user.id]
+    );
+
+    res.json(breakdown.rows);
+
+  } catch (err) {
+    console.error("Subject breakdown error:", err);
+    res.status(500).json({ error: "Failed to fetch breakdown" });
+  }
+};
+/* ============================================================
+   ADMIN EXAM ANALYTICS
+============================================================ */
+exports.adminExamAnalytics = async (req, res) => {
+  try {
+    const { examId } = req.params;
+
+    const stats = await pool.query(
+      `
+      SELECT
+        COUNT(*) AS total_attempts,
+        AVG(score) AS avg_score,
+        MAX(score) AS highest_score,
+        MIN(score) AS lowest_score
+      FROM results r
+      JOIN exam_sessions s ON s.id = r.session_id
+      WHERE s.exam_id = $1
+      `,
+      [examId]
+    );
+
+    res.json(stats.rows[0]);
+
+  } catch (err) {
+    console.error("Admin analytics error:", err);
+    res.status(500).json({ error: "Failed to fetch exam analytics" });
+  }
+};
+/* ============================================================
+   EXAM LEADERBOARD
+============================================================ */
+exports.examLeaderboard = async (req, res) => {
+  try {
+    const { examId } = req.params;
+
+    const leaderboard = await pool.query(
+      `
+      SELECT
+        s.student_id,
+        r.score,
+        r.percentage,
+        RANK() OVER (ORDER BY r.score DESC) AS rank
+      FROM results r
+      JOIN exam_sessions s ON s.id = r.session_id
+      WHERE s.exam_id = $1
+      ORDER BY r.score DESC
+      `,
+      [examId]
+    );
+
+    res.json(leaderboard.rows);
+
+  } catch (err) {
+    console.error("Leaderboard error:", err);
+    res.status(500).json({ error: "Failed to fetch leaderboard" });
   }
 };
